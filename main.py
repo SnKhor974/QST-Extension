@@ -16,34 +16,64 @@ class WebSocketClient:
         self.ssl_context = ssl._create_unverified_context()  # Create an SSL context that does not verify certificates
 
     async def initialize_connection(self):
-        async with websockets.connect(self.uri, ssl=self.ssl_context) as websocket:
-            # Send authentication request
-            auth_request = {
-                "RQT": "version",
-                "VN": "1.00",
-                "TK": self.token
-            }
-            
-            log_info(f"Sending authentication request: {auth_request}")
-            
-            await websocket.send(json.dumps(auth_request))
-            auth_response = await websocket.recv()
-            
-            log_info(f"Received authentication response: {auth_response}")
-            
-            auth_response_data = json.loads(auth_response)
-            
-            if auth_response_data.get("RES") == "OK":      
-                log_info(f"Authentication success: {auth_response_data}")
-            else:  
-                log_info(f"Authentication failed: {auth_response_data}")
+        try:
+            async with websockets.connect(self.uri, ssl=self.ssl_context) as websocket:
+                # Send authentication request
+                auth_request = {
+                    "RQT": "version",
+                    "VN": "1.00",
+                    "TK": self.token
+                }
                 
-    async def place_order(self, message):
-        async with websockets.connect(self.uri, ssl=self.ssl_context) as websocket:
-            await websocket.send(json.dumps(message))
-            response = await websocket.recv()
-            log_info(f"Received response: {response}")
-            return response
+                log_info(f"Sending authentication request: {auth_request}")
+                
+                await websocket.send(json.dumps(auth_request))
+                auth_response = await websocket.recv()
+                
+                log_info(f"Received authentication response: {auth_response}")
+                
+                auth_response_data = json.loads(auth_response)
+                
+                if auth_response_data.get("RES") == "OK":      
+                    log_info(f"Authentication success: {auth_response_data}")
+                else:  
+                    log_info(f"Authentication failed: {auth_response_data}")
+        except Exception as e:
+            log_info(f"Authentication error: {e}")
+                
+    async def send_request(self, message):
+        retry_attempts = 5
+        retry_delay = 5
+        
+        for attempt in range(retry_attempts):
+            try:
+                async with websockets.connect(self.uri, ssl=self.ssl_context) as websocket:
+                    log_info(f"Sending request: {message}")
+                    
+                    await websocket.send(json.dumps(message))
+                    response = await websocket.recv()
+                    
+                    log_info(f"Received response: {response}")
+                    
+                    response_data = json.loads(response)
+                    
+                    if response_data.get("RES") == "OK":      
+                        log_info(f"Request success: {response_data}")
+                        break
+                    else:  
+                        log_info(f"Request failed: {response_data}")
+                        if attempt < retry_attempts - 1:
+                            log_info(f"Retrying... ({attempt + 1}/{retry_attempts})")
+                            await asyncio.sleep(retry_delay)  # Wait before retrying
+                        else:
+                            log_info("All retry attempts failed.")
+            except Exception as e:
+                log_info(f"Request error: {e}")
+                if attempt < retry_attempts - 1:
+                    log_info(f"Retrying... ({attempt + 1}/{retry_attempts})")
+                    await asyncio.sleep(retry_delay)  # Wait before retrying
+                else:
+                    log_info("All retry attempts failed.")
 
 class FlaskApp:
     def __init__(self, host, port, debug, ws_url, token, discord_webhook):
@@ -63,51 +93,64 @@ class FlaskApp:
     def routes(self):
         @self.app.route('/alert', methods=['POST'])
         def alert():
-            tradingview_api = request.json
-            log_info(f"Received TradingView API: {tradingview_api}")
-            
-            action  = tradingview_api['strategy']['order_action']
-            price  = tradingview_api['strategy']['order_price']
-            ticker  = tradingview_api['ticker']
-
-            qst_api = {
-                "RQT": "place_order", #request
-                "PV": "PTS", #provider
-                "AC": "KH539483", #account
-                "SD": "B" if action == "buy" else "S",
-                "QT": "1", #quantity
-                "INS": ticker, #instrument
-                "TP": "MKT", #order type (LMT, MKT, STOP, STL, STWL)
-                "PR": price, #price
-                "LM": price, #limit 
-                "LF": "DAY", #time in force (DAY, GTC, GTD)
-                "CNF": "OFF"
-            }
-            
-            chat_message = {
-                "username": "AlertBot",
-                "content": f"Placing Order: {qst_api}"
-            }
-            
-            requests.post(self.discord_webhook, json=chat_message)
-            
-            log_info(f"Generated QST API: {qst_api}")
-            
-            result = asyncio.run(self.ws_client.place_order(qst_api))
-         
-            log_info(f"Result: {result}")
-            
-            return jsonify({
-                "Received": tradingview_api,
-                "Message": "Data received successfully!"
-            })
-
+            try:
+                tradingview_api = request.json
+                log_info(f"Received TradingView API: {tradingview_api}")
+                
+                # Generate qst api from tradingview api
+                qst_api = generate_qst_api(tradingview_api)
+                
+                # Send discord message
+                send_discord_message(self.discord_webhook, qst_api)
+                
+                log_info(f"Generated QST API: {qst_api}")
+                
+                # Send order request with generated qst api
+                asyncio.run(self.ws_client.send_request(qst_api))
+                
+                return jsonify({
+                    "Request success": qst_api,
+                })
+            except Exception as e:
+                log_info(f"Error: {e}")
+                return jsonify({
+                    "Request error": str(e),
+                })
+    
 def log_info(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_message = f"{timestamp} INFO: {message}"
     print(log_message)
     with open("C:/QST-Extension/QST-log.txt", "a") as file:
         file.write(log_message + "\n")
+        
+def send_discord_message(discord_webhook, message):
+    chat_message = {
+        "username": "AlertBot",
+        "content": f"Placing Order: {message}"
+    }
+    
+    requests.post(discord_webhook, json=chat_message)
+    
+def generate_qst_api(tradingview_api):
+    action  = tradingview_api['strategy']['order_action']
+    price  = tradingview_api['strategy']['order_price']
+    ticker  = tradingview_api['ticker']
+
+    qst_api = {
+        "RQT": "place_order", #request
+        "PV": "PTS", #provider
+        "AC": "KH539483", #account
+        "SD": "B" if action == "buy" else "S",
+        "QT": "1", #quantity
+        "INS": ticker, #instrument
+        "TP": "MKT", #order type (LMT, MKT, STOP, STL, STWL)
+        "PR": price, #price
+        "LM": price, #limit 
+        "LF": "DAY", #time in force (DAY, GTC, GTD)
+        "CNF": "OFF"
+    }
+    return qst_api
 
 def create_app(host, port, debug, ws_url, token, discord_webhook):
     flask_app = FlaskApp(host, port, debug, ws_url, token, discord_webhook)
