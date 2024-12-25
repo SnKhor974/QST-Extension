@@ -76,14 +76,13 @@ class WebSocketClient:
                     log_info("All retry attempts failed.")
 
 class FlaskApp:
-    def __init__(self, host, port, debug, ws_url, token, discord_webhook):
+    def __init__(self, host, port, debug, ws_url, token):
         self.app = Flask(__name__)
         self.host = host
         self.port = port
         self.debug = debug
         self.ws_url = ws_url
         self.token = token
-        self.discord_webhook = discord_webhook
         self.routes()
         # Authenticate with QST server
         self.ws_client = WebSocketClient(ws_url, token)
@@ -94,22 +93,21 @@ class FlaskApp:
         @self.app.route('/alert', methods=['POST'])
         def alert():
             try:
-                tradingview_api = request.json
-                log_info(f"Received TradingView API: {tradingview_api}")
+                alert_data = request.json
+                log_info(f"Received alert from TradingView: {alert_data}")
                 
                 # Generate qst api from tradingview api
-                qst_api = generate_qst_api(tradingview_api)
+                #qst_api = generate_qst_api(alert_data)
                 
-                # Send discord message
-                send_discord_message(self.discord_webhook, qst_api)
-                
-                log_info(f"Generated QST API: {qst_api}")
+                #log_info(f"Generated QST API: {qst_api}")
+                             
+                request_data = alert_data
                 
                 # Send order request with generated qst api
-                asyncio.run(self.ws_client.send_request(qst_api))
+                asyncio.run(self.ws_client.send_request(request_data))
                 
                 return jsonify({
-                    "Request success": qst_api,
+                    "Request success": request_data,
                 })
             except Exception as e:
                 log_info(f"Error: {e}")
@@ -118,18 +116,16 @@ class FlaskApp:
                 })
     
 def log_info(message):
+    discord_webhook = "https://discord.com/api/webhooks/1321613723298824264/ritBy2KredUVBPyd7x8ROQJGuQj6odMWC07QH9XawULI-hMKge1Akk8CPgTWv8peK5__"
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_message = f"{timestamp} INFO: {message}"
     print(log_message)
-    with open("C:/QST-Extension/QST-log.txt", "a") as file:
-        file.write(log_message + "\n")
-        
-def send_discord_message(discord_webhook, message):
     chat_message = {
         "username": "AlertBot",
-        "content": f"Placing Order: {message}"
+        "content": f"{log_message}"
     }
-    
+    with open("C:/QST-Extension/QST-log.txt", "a") as file:
+        file.write(log_message + "\n")
     requests.post(discord_webhook, json=chat_message)
     
 def generate_qst_api(tradingview_api):
@@ -140,7 +136,7 @@ def generate_qst_api(tradingview_api):
     qst_api = {
         "RQT": "place_order", #request
         "PV": "PTS", #provider
-        "AC": "KH539483", #account
+        "AC": "39477@RHB - PAPER TRADING", #account
         "SD": "B" if action == "buy" else "S",
         "QT": "1", #quantity
         "INS": ticker, #instrument
@@ -152,8 +148,8 @@ def generate_qst_api(tradingview_api):
     }
     return qst_api
 
-def create_app(host, port, debug, ws_url, token, discord_webhook):
-    flask_app = FlaskApp(host, port, debug, ws_url, token, discord_webhook)
+def create_app(host, port, debug, ws_url, token):
+    flask_app = FlaskApp(host, port, debug, ws_url, token)
     return flask_app.app
 
 def main():
@@ -175,9 +171,7 @@ def main():
     # Extract the token from the parameter
     token = re.sub(r'\D', '', args.token)
     
-    discord_webhook = "https://discord.com/api/webhooks/1321199471715024969/ChpdTnAJtbWhXbiQtcHmfbBUsB_D08LVpG1DTTKAieiIMQy9iapuBjGPN2uDaOVPZvfm"
-    
-    version = "2.3"
+    version = "2.4"
     
     log_info(f"Starting Flask app on {args.host}:{args.port} with WSGI server")
     log_info(f"Version: {version}")
@@ -185,7 +179,7 @@ def main():
     log_info(f"WebSocket server URL: {args.ws_url}")
 
     # Create Flask app
-    app = create_app(args.host, args.port, args.debug, args.ws_url, token, discord_webhook)
+    app = create_app(args.host, args.port, args.debug, args.ws_url, token)
     
     # Run the Flask app with waitress
     serve(app, host=args.host, port=args.port)
